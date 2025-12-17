@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OPSWAT Assistant Chat (Local Debug)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom scrollbar styling for a cleaner look */
+        #chat-window::-webkit-scrollbar {
+            width: 8px;
+        }
+        #chat-window::-webkit-scrollbar-thumb {
+            background-color: #a0aec0; /* Tailwind gray-400 */
+            border-radius: 4px;
+        }
+        #chat-window::-webkit-scrollbar-track {
+            background-color: #edf2f7; /* Tailwind gray-100 */
+        }
+        .loading-spinner { 
+            display: inline-block; width: 15px; height: 15px; 
+            border: 3px solid rgba(0,0,0,.3); border-radius: 50%; 
+            border-top-color: #2563eb; animation: spin 1s ease-in-out infinite; 
+            margin-left: 0.5rem; 
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen font-sans flex items-center justify-center p-4">
+
+    <div id="chat-container" class="bg-white rounded-xl shadow-2xl w-full max-w-4xl flex flex-col h-[90vh]">
+        
+        <!-- Header -->
+        <header class="bg-blue-800 text-white p-4 rounded-t-xl flex justify-between items-center">
+            <div class="flex items-center">
+                <!-- OPSWAT-themed icon or logo -->
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                <h1 class="text-xl font-bold">OPSWAT Assistant</h1>
+            </div>
+            <!-- New Chat Button -->
+            <button id="new-chat-btn"
+                    class="bg-blue-600 hover:bg-blue-700 text-white text-sm py-2 px-4 rounded-lg transition duration-200 shadow-md flex items-center">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                </svg>
+                Start New Chat
+            </button>
+        </header>
+
+        <!-- Chat Window -->
+        <div id="chat-window" class="flex-grow p-6 overflow-y-auto space-y-4 bg-gray-50">
+            <!-- Initial Message -->
+            <div class="flex justify-start">
+                <div class="bg-gray-200 text-gray-800 p-3 rounded-xl rounded-tl-none max-w-xl shadow-sm">
+                    Hello! I'm your OPSWAT knowledge assistant. Ask me anything about our products, technologies, or documentation.
+                    <div id="status-thread" class="text-xs mt-2 text-gray-500">
+                        Status: Ready.
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Input Area -->
+        <div class="p-4 border-t border-gray-200 bg-white rounded-b-xl">
+            <div id="api-status" class="text-center text-sm mb-2 text-blue-500 font-medium hidden">
+                Could not connect to the API. Ensure 'assistant_chat.py' is running on http://127.0.0.1:5000/chat.
+            </div>
+            <form id="chat-form" class="flex space-x-3">
+                <input type="text" id="user-input" placeholder="Type your message here..."
+                        class="flex-grow p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition duration-150"
+                        required>
+                <button type="submit" id="send-btn"
+                        class="bg-blue-800 text-white py-3 px-6 rounded-lg hover:bg-blue-900 transition duration-150 shadow-md disabled:bg-blue-400">
+                    Send
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // --- CONFIGURATION ---
+        const API_BASE_URL = 'http://127.0.0.1:5000';
+        const CHAT_ENDPOINT = `${API_BASE_URL}/chat`;
+        const DELETE_THREAD_ENDPOINT = `${API_BASE_URL}/thread/delete`;
+        
+        // NEW: Critique Server Endpoint
+        const CRITIQUE_URL = 'http://localhost:8787/api/critique';
+        
+        const USER_ID_KEY = 'opswat_chat_user_id';
+
+        // --- STATE MANAGEMENT ---
+        let currentThreadId = null; 
+        let currentUserId = localStorage.getItem(USER_ID_KEY) || generateUniqueId();
+
+        // --- UI ELEMENTS ---
+        const chatWindow = document.getElementById('chat-window');
+        const chatForm = document.getElementById('chat-form');
+        const userInput = document.getElementById('user-input');
+        const sendBtn = document.getElementById('send-btn');
+        const apiStatus = document.getElementById('api-status');
+        const newChatBtn = document.getElementById('new-chat-btn');
+        let statusThread = document.getElementById('status-thread'); // Must be updated later if chat is cleared
+
+        // --- UTILITY FUNCTIONS ---
+        function generateUniqueId() {
+            const id = 'user-' + Date.now().toString(36) + Math.random().toString(36).substring(2, 5);
+            localStorage.setItem(USER_ID_KEY, id);
+            return id;
+        }
+
+        /**
+         * Appends a message to the chat window and returns the new container element.
+         * @returns {HTMLElement} The outer message container element.
+         */
+        function appendMessage(sender, message) {
+            const isUser = sender === 'user';
+            const alignment = isUser ? 'justify-end' : 'justify-start';
+            const bgColor = isUser ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-800';
+            const borderRadius = isUser ? 'rounded-xl rounded-br-none' : 'rounded-xl rounded-tl-none';
+
+            const messageElement = document.createElement('div');
+            messageElement.className = `flex ${alignment}`;
+            
+            // Inner content wrapper (crucial for inserting critique after the main text)
+            const contentWrapper = document.createElement('div');
+            contentWrapper.className = `${bgColor} p-3 ${borderRadius} max-w-xl shadow-md whitespace-pre-wrap`;
+            contentWrapper.innerHTML = message;
+
+            messageElement.appendChild(contentWrapper);
+            chatWindow.appendChild(messageElement);
+            chatWindow.scrollTop = chatWindow.scrollHeight; 
+            
+            return messageElement;
+        }
+        
+        // Helper function to create a critique loading spinner
+        function createCritiqueLoading(parentContainer) {
+            const critiqueLoadingDiv = document.createElement('div');
+            critiqueLoadingDiv.id = 'critiqueLoading';
+            critiqueLoadingDiv.className = 'message mt-2 text-sm text-gray-600 flex items-center p-2 rounded-lg bg-yellow-100 border border-yellow-300';
+            critiqueLoadingDiv.innerHTML = '<span class="mr-2">Analyzing quality...</span><div class="loading-spinner"></div>';
+            parentContainer.querySelector('div').appendChild(critiqueLoadingDiv);
+        }
+
+        function updateStatus(message, threadId) {
+            const currentStatusEl = document.getElementById('status-thread');
+            if(currentStatusEl) {
+                currentStatusEl.innerHTML = `
+                    Status: ${message} 
+                    ${threadId ? `| Thread ID: <span class="font-mono text-xs">${threadId}</span>` : ''}
+                `;
+            }
+        }
+
+        function toggleLoading(isLoading) {
+            sendBtn.disabled = isLoading;
+            userInput.disabled = isLoading;
+            sendBtn.textContent = isLoading ? 'Sending...' : 'Send';
+        }
+
+        function displayAPIError(message) {
+            apiStatus.textContent = `Error: ${message}`;
+            apiStatus.classList.remove('hidden');
+        }
+
+        function clearChat() {
+            chatWindow.innerHTML = `
+                <div class="flex justify-start">
+                    <div class="bg-gray-200 text-gray-800 p-3 rounded-xl rounded-tl-none max-w-xl shadow-sm">
+                        Conversation reset. Ask me anything to start a new thread.
+                        <div id="status-thread" class="text-xs mt-2 text-gray-500">
+                            Status: Ready.
+                        </div>
+                    </div>
+                </div>
+            `;
+            // Re-assign the status element pointer after clearing the inner HTML
+            statusThread = document.getElementById('status-thread');
+            updateStatus('Ready (User ID: ' + currentUserId.substring(0, 10) + '...)', null);
+        }
+        
+        // --- CRITIQUE LOGIC ---
+
+        /**
+         * Runs the QA critique on the bot's response using the Node.js API.
+         * @param {string} question The original user question.
+         * @param {string} answer The answer from the Flask/OpenAI system.
+         * @param {HTMLElement} messageContainer The outer element of the assistant's message.
+         */
+        async function runCritique(question, answer, messageContainer) {
+            const innerContent = messageContainer.querySelector('div');
+            
+            if (!innerContent) return; // Safety check
+            
+            // 1. Show Loading
+            createCritiqueLoading(innerContent);
+
+            try {
+                const response = await fetch(CRITIQUE_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ question, answer })
+                });
+
+                const result = await response.json();
+                
+                // Extract the critique content
+                const critiqueText = result?.choices?.[0]?.message?.content?.trim()
+                                     || result?.error?.message 
+                                     || 'Error: Could not retrieve critique from QA API.';
+
+                // 2. Create the final critique display box
+                const critiqueResultDiv = document.createElement('div');
+                critiqueResultDiv.className = 'mt-3 pt-3 border-t border-yellow-400 text-sm';
+                
+                // Format the critique text for better display
+                let formattedCritique = String(critiqueText)
+                    .replace(/\*\*(.*?)\*\*/g, '<strong class="text-blue-900">$1</strong>')
+                    .replace(/\n/g, '<br>');
+                
+                critiqueResultDiv.innerHTML = `<strong class="text-yellow-800">QA CRITIQUE:</strong><br>${formattedCritique}`;
+                
+                innerContent.appendChild(critiqueResultDiv);
+
+            } catch (e) {
+                // Handle network errors (e.g., if the Node server isn't running)
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'mt-3 pt-3 border-t border-red-400 text-xs text-red-600';
+                errorDiv.innerHTML = `QA Critique Failed. Is the Node server running at ${CRITIQUE_URL}?`;
+                innerContent.appendChild(errorDiv);
+                console.error("Critique API Error:", e);
+            } finally {
+                // 3. Remove the loading indicator
+                const loadingEl = innerContent.querySelector('#critiqueLoading');
+                if (loadingEl) loadingEl.remove();
+                chatWindow.scrollTop = chatWindow.scrollHeight; // Scroll to bottom
+            }
+        }
+
+
+        // --- API CALLS ---
+
+        // Function to handle the actual chat submission
+        async function sendChatMessage(e) {
+            e.preventDefault();
+            const message = userInput.value.trim();
+            if (!message) return;
+
+            // 1. User message is displayed
+            appendMessage('user', message);
+            
+            userInput.value = '';
+            toggleLoading(true);
+            apiStatus.classList.add('hidden');
+
+            const payload = {
+                user_id: currentUserId,
+                message: message,
+                thread_id: currentThreadId
+            };
+
+            let botAnswer = null; // Store the bot's response
+            let userQuestion = message; // Store the original question
+
+            try {
+                // 2. Call the Flask/OpenAI Chat API (Primary Generation)
+                const response = await fetch(CHAT_ENDPOINT, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+                
+                if (response.ok) {
+                    currentThreadId = data.thread_id;
+                    botAnswer = data.response;
+                    
+                    // 3. Display the assistant's answer and get its container element
+                    const botMessageContainer = appendMessage('assistant', botAnswer);
+                    updateStatus('Active', currentThreadId);
+                    
+                    // 4. Immediately run the Critique on the received Q/A pair
+                    runCritique(userQuestion, botAnswer, botMessageContainer);
+
+                } else {
+                    // Handle API errors (400, 500, etc.) returned by Flask
+                    const errorMessage = data.error ? data.error : 'An unknown API error occurred.';
+                    displayAPIError(`[Status ${response.status}] ${errorMessage}`);
+                    appendMessage('assistant', `⚠️ Error processing request: ${errorMessage}`);
+                    updateStatus('Error', currentThreadId);
+                }
+
+            } catch (error) {
+                // Handle network errors (API not running)
+                console.error('Network or Server Error:', error);
+                const errorMessage = `Could not connect to Chat API at ${API_BASE_URL}. Check your server console.`;
+                displayAPIError(errorMessage);
+                appendMessage('assistant', `❌ Connection Failure: ${errorMessage}`);
+                updateStatus('Disconnected', null);
+            } finally {
+                toggleLoading(false);
+            }
+        }
+        
+        // Function to handle thread deletion (New Chat button)
+        async function deleteThreadAndStartNew() {
+            if (!currentThreadId) {
+                clearChat();
+                return;
+            }
+            
+            // Replacing window.confirm() with a console log and proceeding 
+            console.log(`Attempting to delete thread ${currentThreadId}...`);
+
+            toggleLoading(true);
+            updateStatus('Deleting Thread...', currentThreadId);
+            
+            const payload = {
+                user_id: currentUserId,
+                thread_id: currentThreadId
+            };
+
+            try {
+                const response = await fetch(DELETE_THREAD_ENDPOINT, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.ok) {
+                    currentThreadId = null;
+                    clearChat();
+                } else {
+                    const data = await response.json();
+                    console.error(`Failed to delete thread on server: ${data.message || 'Unknown error.'}`);
+                    updateStatus(`Deletion Failed: ${data.message || 'Unknown error.'}`, currentThreadId);
+                    // Still reset the local state so the next message creates a new thread
+                    currentThreadId = null; 
+                    clearChat();
+                }
+            } catch (error) {
+                console.error('Connection error during thread deletion:', error);
+                updateStatus('Connection error during thread deletion.', currentThreadId);
+                currentThreadId = null;
+                clearChat();
+            } finally {
+                toggleLoading(false);
+            }
+        }
+
+
+        // --- EVENT LISTENERS AND INITIALIZATION ---
+        chatForm.addEventListener('submit', sendChatMessage);
+        newChatBtn.addEventListener('click', deleteThreadAndStartNew);
+
+        // Initial status update
+        document.addEventListener('DOMContentLoaded', () => {
+            updateStatus('Ready (User ID: ' + currentUserId.substring(0, 10) + '...)', null);
+        });
+
+    </script>
+</body>
+</html>
